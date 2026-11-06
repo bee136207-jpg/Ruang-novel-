@@ -1,5 +1,5 @@
 import React from 'react';
-import { Plus, BookOpen, ArrowLeft, BookMarked, Sparkles, Archive, Grid } from 'lucide-react';
+import { Plus, BookOpen, ArrowLeft, BookMarked, Sparkles, Archive, Grid, Database } from 'lucide-react';
 import { NovelFileType } from '../types/novel';
 
 interface NavbarProps {
@@ -10,6 +10,8 @@ interface NavbarProps {
   onToggleViewMode: (mode: 'grid' | 'shelf') => void;
   fileBaruCount: number;
   fileLamaCount: number;
+  onOpenSupabaseModal?: () => void;
+  isTableReady?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -18,6 +20,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeFileType,
   viewMode,
   onToggleViewMode,
+  onOpenSupabaseModal,
+  isTableReady = false,
 }) => {
   const isFileBaru = activeFileType === 'file_baru';
   const isFileLama = activeFileType === 'file_lama';
@@ -56,8 +60,35 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </div>
 
-          {/* Right: View Mode Toggle & Add Button (Engineered to fit mobile screens perfectly without clipping) */}
+          {/* Right: View Mode Toggle, Supabase Status & Add Button */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Supabase Status Button */}
+            {onOpenSupabaseModal && (
+              <button
+                onClick={onOpenSupabaseModal}
+                className={`h-8 px-2 sm:px-2.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors shrink-0 ${
+                  isTableReady
+                    ? 'bg-slate-800 hover:bg-slate-750 text-emerald-300 border-emerald-500/40'
+                    : 'bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border-amber-600/60'
+                }`}
+                title={
+                  isTableReady
+                    ? 'Database Supabase Aktif & Tersinkron'
+                    : 'Setup Database Supabase Diperlukan'
+                }
+              >
+                <Database className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden md:inline font-mono text-[11px]">
+                  {isTableReady ? 'Supabase' : 'Setup DB'}
+                </span>
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    isTableReady ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                  }`}
+                />
+              </button>
+            )}
+
             {/* View Mode Toggle: Kartu vs Rak */}
             <div className="bg-slate-800 p-0.5 rounded-lg border border-slate-700 flex items-center">
               <button

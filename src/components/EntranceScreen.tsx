@@ -1,17 +1,21 @@
 import React from 'react';
 import { NovelFileType } from '../types/novel';
-import { Sparkles, Archive, ArrowRight, BookOpen, Layers, Library } from 'lucide-react';
+import { Sparkles, Archive, ArrowRight, BookOpen, Layers, Library, Database } from 'lucide-react';
 
 interface EntranceScreenProps {
   onEnter: (fileType: NovelFileType | 'all', viewMode?: 'grid' | 'shelf') => void;
   fileBaruCount: number;
   fileLamaCount: number;
+  onOpenSupabaseModal?: () => void;
+  isTableReady?: boolean;
 }
 
 export const EntranceScreen: React.FC<EntranceScreenProps> = ({
   onEnter,
   fileBaruCount,
   fileLamaCount,
+  onOpenSupabaseModal,
+  isTableReady = false,
 }) => {
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-sky-950 text-white flex flex-col justify-between relative overflow-hidden select-none">
@@ -30,8 +34,29 @@ export const EntranceScreen: React.FC<EntranceScreenProps> = ({
           </span>
         </div>
 
-        <div className="text-[10px] text-sky-300/80 font-mono tracking-wider">
-          PERPUSTAKAAN DIGITAL
+        <div className="flex items-center gap-2">
+          {onOpenSupabaseModal && (
+            <button
+              onClick={onOpenSupabaseModal}
+              className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                isTableReady
+                  ? 'bg-slate-900/80 text-emerald-300 border-emerald-500/40 hover:bg-slate-800'
+                  : 'bg-amber-950/70 text-amber-300 border-amber-500/60 hover:bg-amber-900'
+              }`}
+              title="Status Database Supabase"
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>{isTableReady ? 'Supabase Terhubung' : 'Setup Supabase'}</span>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isTableReady ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                }`}
+              />
+            </button>
+          )}
+          <div className="text-[10px] text-sky-300/80 font-mono tracking-wider hidden sm:block">
+            PERPUSTAKAAN DIGITAL
+          </div>
         </div>
       </header>
 

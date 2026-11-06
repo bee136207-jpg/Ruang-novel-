@@ -11,12 +11,24 @@ import { NovelDetailModal } from './components/NovelDetailModal';
 import { AddNovelModal } from './components/AddNovelModal';
 import { LibraryStatsModal } from './components/LibraryStatsModal';
 import { NotesDrawer } from './components/NotesDrawer';
+import { SupabaseSyncModal } from './components/SupabaseSyncModal';
+import {
+  supabase,
+  checkSupabaseHealth,
+  fetchNovelsFromSupabase,
+  upsertNovelToSupabase,
+  seedNovelsToSupabase,
+  deleteNovelFromSupabase,
+  updateNovelFieldsInSupabase,
+  SupabaseHealth,
+} from './lib/supabase';
 import {
   FilterX,
   Clock,
   CheckCircle2,
   BookMarked,
   ArrowLeft,
+  Database,
 } from 'lucide-react';
 
 export default function App() {
@@ -72,6 +84,16 @@ export default function App() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
   const [isNotesDrawerOpen, setIsNotesDrawerOpen] = useState(false);
+  const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
+
+  // Supabase Database States
+  const [supabaseHealth, setSupabaseHealth] = useState<SupabaseHealth>({
+    isConnected: false,
+    tableExists: false,
+    message: 'Memeriksa koneksi Supabase...',
+  });
+  const [isCheckingSupabase, setIsCheckingSupabase] = useState(false);
+  const [isSyncingSupabase, setIsSyncingSupabase] = useState(false);
 
   // Notification Banner
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -80,10 +102,94 @@ export default function App() {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
-    }, 3200);
+    }, 3500);
   };
 
-  // Persist novels to localStorage
+  // Check Supabase health & load novels on startup
+  const checkAndLoadSupabase = async (isManualCheck = false) => {
+    setIsCheckingSupabase(true);
+    try {
+      const health = await checkSupabaseHealth();
+      setSupabaseHealth(health);
+
+      if (health.tableExists) {
+        try {
+          const cloudNovels = await fetchNovelsFromSupabase();
+          if (cloudNovels && cloudNovels.length > 0) {
+            setNovels(cloudNovels);
+            if (isManualCheck) {
+              showToast(`Berhasil memuat ${cloudNovels.length} novel dari database Supabase!`);
+            }
+          } else {
+            // Table is ready but empty: seed the 20 default novels to Postgres
+            await seedNovelsToSupabase(INITIAL_NOVELS);
+            setNovels(INITIAL_NOVELS);
+            showToast('20 novel naskah standar berhasil disinkronkan ke Supabase!');
+          }
+        } catch (fetchErr: any) {
+          console.error('Gagal mengambil naskah dari Supabase:', fetchErr);
+        }
+      } else if (isManualCheck) {
+        showToast(health.message);
+      }
+    } catch (err: any) {
+      console.error('Error saat koneksi Supabase:', err);
+    } finally {
+      setIsCheckingSupabase(false);
+    }
+  };
+
+  useEffect(() => {
+    checkAndLoadSupabase();
+  }, []);
+
+  // Realtime Supabase Channel: Sync changes instantly across tabs and devices
+  useEffect(() => {
+    if (!supabaseHealth.tableExists) return;
+
+    const channel = supabase
+      .channel('realtime_novels_shelf')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'novels' },
+        async () => {
+          try {
+            const fresh = await fetchNovelsFromSupabase();
+            if (fresh && fresh.length > 0) {
+              setNovels(fresh);
+            }
+          } catch (e) {
+            console.error('Realtime sync error:', e);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabaseHealth.tableExists]);
+
+  // Sync active local novels to Supabase manually
+  const handleSyncLocalToCloud = async () => {
+    if (!supabaseHealth.tableExists) {
+      showToast('Tabel "novels" belum dibuat di Supabase.');
+      setIsSupabaseModalOpen(true);
+      return;
+    }
+    setIsSyncingSupabase(true);
+    try {
+      await seedNovelsToSupabase(novels);
+      showToast(`Berhasil menyinkronkan ${novels.length} novel ke database Supabase!`);
+    } catch (err: any) {
+      console.error('Gagal sinkron:', err);
+      showToast(`Gagal sinkron: ${err.message}`);
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
+
+  // Persist novels to localStorage as local offline backup
   useEffect(() => {
     try {
       localStorage.setItem('ruang_novel_collection_v3', JSON.stringify(novels));
@@ -125,35 +231,50 @@ export default function App() {
 
   // Toggle bookmark
   const handleToggleBookmark = (novelId: string) => {
+    const target = novels.find((n) => n.id === novelId);
+    if (!target) return;
+    const nextState = !target.isBookmarked;
+
     setNovels((prev) =>
-      prev.map((n) => {
-        if (n.id !== novelId) return n;
-        const nextState = !n.isBookmarked;
-        showToast(
-          nextState
-            ? `Ditambahkan ke daftar tanda baca.`
-            : `Dihapus dari tanda baca.`
-        );
-        return { ...n, isBookmarked: nextState };
-      })
+      prev.map((n) => (n.id === novelId ? { ...n, isBookmarked: nextState } : n))
     );
+    showToast(
+      nextState
+        ? `Ditambahkan ke daftar tanda baca.`
+        : `Dihapus dari tanda baca.`
+    );
+
+    if (supabaseHealth.tableExists) {
+      updateNovelFieldsInSupabase(novelId, { is_bookmarked: nextState }).catch((err) =>
+        console.error('Gagal sync bookmark ke Supabase:', err)
+      );
+    }
   };
 
   // Move novel between File Baru and File Lama
   const handleMoveFileType = (novelId: string) => {
+    const target = novels.find((n) => n.id === novelId);
+    if (!target) return;
+    const newType: NovelFileType =
+      target.fileType === 'file_baru' ? 'file_lama' : 'file_baru';
+    const targetLabel = newType === 'file_baru' ? 'File Baru' : 'File Lama';
+
     setNovels((prev) =>
       prev.map((novel) => {
         if (novel.id !== novelId) return novel;
-        const newType: NovelFileType =
-          novel.fileType === 'file_baru' ? 'file_lama' : 'file_baru';
-        const targetLabel = newType === 'file_baru' ? 'File Baru' : 'File Lama';
-        showToast(`Novel "${novel.title}" dipindahkan ke ${targetLabel}.`);
         return {
           ...novel,
           fileType: newType,
         };
       })
     );
+    showToast(`Novel "${target.title}" dipindahkan ke ${targetLabel}.`);
+
+    if (supabaseHealth.tableExists) {
+      updateNovelFieldsInSupabase(novelId, { file_type: newType }).catch((err) =>
+        console.error('Gagal sync pindah bilik ke Supabase:', err)
+      );
+    }
   };
 
   // Update read status
@@ -162,6 +283,12 @@ export default function App() {
       prev.map((n) => (n.id === novelId ? { ...n, status } : n))
     );
     showToast(`Status membaca: "${status}".`);
+
+    if (supabaseHealth.tableExists) {
+      updateNovelFieldsInSupabase(novelId, { status }).catch((err) =>
+        console.error('Gagal sync status ke Supabase:', err)
+      );
+    }
   };
 
   // Update reading progress
@@ -170,20 +297,34 @@ export default function App() {
     chapterIndex: number,
     scrollPercent: number
   ) => {
+    const target = novels.find((n) => n.id === novelId);
+    const progressData = {
+      currentChapterIndex: chapterIndex,
+      scrollPercent,
+      lastReadAt: 'Baru saja',
+    };
+    const newStatus: Novel['status'] =
+      scrollPercent >= 98 && chapterIndex === (target?.chapters.length ?? 1) - 1
+        ? 'Selesai'
+        : 'Sedang Dibaca';
+
     setNovels((prev) =>
       prev.map((n) => {
         if (n.id !== novelId) return n;
         return {
           ...n,
-          status: scrollPercent >= 98 && chapterIndex === n.chapters.length - 1 ? 'Selesai' : 'Sedang Dibaca',
-          readingProgress: {
-            currentChapterIndex: chapterIndex,
-            scrollPercent,
-            lastReadAt: 'Baru saja',
-          },
+          status: newStatus,
+          readingProgress: progressData,
         };
       })
     );
+
+    if (supabaseHealth.tableExists) {
+      updateNovelFieldsInSupabase(novelId, {
+        status: newStatus,
+        reading_progress: progressData,
+      }).catch((err) => console.error('Gagal sync progres ke Supabase:', err));
+    }
   };
 
   // Add note to novel
@@ -201,40 +342,75 @@ export default function App() {
       }),
     };
 
+    let updatedNotes: NovelNote[] = [];
     setNovels((prev) =>
       prev.map((n) => {
         if (n.id !== novelId) return n;
+        updatedNotes = [newNote, ...(n.notes || [])];
         return {
           ...n,
-          notes: [newNote, ...(n.notes || [])],
+          notes: updatedNotes,
         };
       })
     );
 
     showToast('Catatan kutipan berhasil disimpan.');
+
+    if (supabaseHealth.tableExists) {
+      updateNovelFieldsInSupabase(novelId, { notes: updatedNotes }).catch((err) =>
+        console.error('Gagal sync catatan ke Supabase:', err)
+      );
+    }
   };
 
   // Add new novel
-  const handleAddNovel = (newNovel: Novel) => {
+  const handleAddNovel = async (newNovel: Novel) => {
     setNovels((prev) => [newNovel, ...prev]);
     showToast(
       newNovel.isPdf
         ? `Novel PDF "${newNovel.title}" (${newNovel.chapters.length} bab) berhasil ditambahkan!`
         : `Novel "${newNovel.title}" berhasil ditambahkan.`
     );
+
+    if (supabaseHealth.tableExists) {
+      try {
+        await upsertNovelToSupabase(newNovel);
+        showToast(`Tersimpan aman di database Supabase!`);
+      } catch (err: any) {
+        console.error('Gagal menyimpan ke Supabase:', err);
+        showToast(`Tersimpan offline. Supabase: ${err.message}`);
+      }
+    }
   };
 
   // Delete novel
-  const handleDeleteNovel = (novelId: string) => {
+  const handleDeleteNovel = async (novelId: string) => {
     setNovels((prev) => prev.filter((n) => n.id !== novelId));
     showToast('Novel telah dihapus.');
+
+    if (supabaseHealth.tableExists) {
+      try {
+        await deleteNovelFromSupabase(novelId);
+      } catch (err) {
+        console.error('Gagal menghapus dari Supabase:', err);
+      }
+    }
   };
 
   // Reset to initial
-  const handleResetNovels = () => {
+  const handleResetNovels = async () => {
     setNovels(INITIAL_NOVELS);
-    localStorage.removeItem('ruang_novel_collection_v2');
+    localStorage.removeItem('ruang_novel_collection_v3');
     showToast('Koleksi dikembalikan ke 20 naskah standar.');
+
+    if (supabaseHealth.tableExists) {
+      try {
+        await seedNovelsToSupabase(INITIAL_NOVELS);
+        showToast('Supabase di-reset ke 20 naskah bawaan.');
+      } catch (err) {
+        console.error('Gagal reset Supabase:', err);
+      }
+    }
   };
 
   // Import novels
@@ -297,11 +473,34 @@ export default function App() {
   // SCREEN 1: LAYAR MASUK / ENTRANCE SCREEN (Separated from inside app)
   if (currentScreen === 'entrance') {
     return (
-      <EntranceScreen
-        onEnter={handleEnterApp}
-        fileBaruCount={fileBaruCount}
-        fileLamaCount={fileLamaCount}
-      />
+      <>
+        {/* Toast Notification */}
+        {toastMessage && (
+          <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white py-2.5 px-4 rounded-xl shadow-2xl border border-sky-400 text-xs flex items-center gap-2.5 animate-in fade-in slide-in-from-bottom-2">
+            <div className="w-2 h-2 rounded-full bg-sky-400" />
+            <span className="font-medium">{toastMessage}</span>
+          </div>
+        )}
+
+        <EntranceScreen
+          onEnter={handleEnterApp}
+          fileBaruCount={fileBaruCount}
+          fileLamaCount={fileLamaCount}
+          onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
+          isTableReady={supabaseHealth.tableExists}
+        />
+
+        <SupabaseSyncModal
+          isOpen={isSupabaseModalOpen}
+          onClose={() => setIsSupabaseModalOpen(false)}
+          health={supabaseHealth}
+          isChecking={isCheckingSupabase}
+          onRefreshHealth={() => checkAndLoadSupabase(true)}
+          localNovels={novels}
+          onSyncLocalToCloud={handleSyncLocalToCloud}
+          isSyncing={isSyncingSupabase}
+        />
+      </>
     );
   }
 
@@ -316,7 +515,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Clean Single-Row Navbar with Back to Entrance Button */}
+      {/* Clean Single-Row Navbar with Back to Entrance Button & Supabase Status */}
       <Navbar
         onOpenAddModal={() => setIsAddModalOpen(true)}
         onReturnToEntrance={() => setCurrentScreen('entrance')}
@@ -325,6 +524,8 @@ export default function App() {
         onToggleViewMode={setViewMode}
         fileBaruCount={fileBaruCount}
         fileLamaCount={fileLamaCount}
+        onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
+        isTableReady={supabaseHealth.tableExists}
       />
 
       {/* Clean Compact Hero: Title + Search & Genre (No redundant paragraphs or file switchers) */}
@@ -484,6 +685,17 @@ export default function App() {
         onOpenNovel={(n) => {
           setSelectedNovelId(n.id);
         }}
+      />
+
+      <SupabaseSyncModal
+        isOpen={isSupabaseModalOpen}
+        onClose={() => setIsSupabaseModalOpen(false)}
+        health={supabaseHealth}
+        isChecking={isCheckingSupabase}
+        onRefreshHealth={() => checkAndLoadSupabase(true)}
+        localNovels={novels}
+        onSyncLocalToCloud={handleSyncLocalToCloud}
+        isSyncing={isSyncingSupabase}
       />
     </div>
   );
